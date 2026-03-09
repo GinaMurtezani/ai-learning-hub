@@ -134,5 +134,8 @@ REST_FRAMEWORK = {
 }
 
 # Load environment variables
+import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(BASE_DIR / '.env')
+
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
