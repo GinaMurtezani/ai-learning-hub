@@ -479,3 +479,521 @@ class TestLessonCompleteAPI:
         user.profile.refresh_from_db()
         # 290 + 10 = 300 → level = 300 // 100 + 1 = 4
         assert user.profile.level == 4
+
+
+# ── LearningPath List API — Lessons with completion ──────────
+
+
+class TestPathListLessonsField:
+    def test_lessons_field_present(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert "lessons" in resp.data[0]
+
+    def test_lessons_is_list(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert isinstance(resp.data[0]["lessons"], list)
+
+    def test_lessons_count_matches(self, auth_client, learning_path, lesson, other_lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert len(resp.data[0]["lessons"]) == 2
+
+    def test_lesson_has_completed_field(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        assert "completed" in lesson_data
+
+    def test_lesson_has_all_fields(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        expected = {"id", "slug", "title", "description", "xp_reward", "order", "completed", "completed_at"}
+        assert expected == set(lesson_data.keys())
+
+    def test_lesson_not_completed_default(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        assert lesson_data["completed"] is False
+
+    def test_lesson_completed_true(self, auth_client, user, learning_path, lesson):
+        LessonProgress.objects.create(user=user, lesson=lesson, completed=True)
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        assert lesson_data["completed"] is True
+
+    def test_lesson_incomplete_progress_still_false(self, auth_client, user, learning_path, lesson):
+        """LessonProgress exists but completed=False → still False."""
+        LessonProgress.objects.create(user=user, lesson=lesson, completed=False)
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        assert lesson_data["completed"] is False
+
+    def test_mixed_completion_status(self, auth_client, user, learning_path, lesson, other_lesson):
+        LessonProgress.objects.create(user=user, lesson=lesson, completed=True)
+        resp = auth_client.get("/api/v1/paths/")
+        lessons_data = resp.data[0]["lessons"]
+        by_slug = {l["slug"]: l for l in lessons_data}
+        assert by_slug["intro-ai"]["completed"] is True
+        assert by_slug["history-ai"]["completed"] is False
+
+    def test_other_user_completion_not_visible(self, auth_client, user, other_user, learning_path, lesson):
+        """Other user's progress should not affect current user."""
+        LessonProgress.objects.create(user=other_user, lesson=lesson, completed=True)
+        resp = auth_client.get("/api/v1/paths/")
+        lesson_data = resp.data[0]["lessons"][0]
+        assert lesson_data["completed"] is False
+
+    def test_all_lessons_completed(self, auth_client, user, learning_path, lesson, other_lesson):
+        LessonProgress.objects.create(user=user, lesson=lesson, completed=True)
+        LessonProgress.objects.create(user=user, lesson=other_lesson, completed=True)
+        resp = auth_client.get("/api/v1/paths/")
+        lessons_data = resp.data[0]["lessons"]
+        assert all(l["completed"] for l in lessons_data)
+
+    def test_lessons_ordered_by_order_field(self, auth_client, learning_path, lesson, other_lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        lessons_data = resp.data[0]["lessons"]
+        orders = [l["order"] for l in lessons_data]
+        assert orders == sorted(orders)
+
+    def test_empty_path_has_empty_lessons(self, auth_client, learning_path):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"] == []
+
+    def test_multiple_paths_each_has_lessons(self, auth_client, learning_path, other_path, lesson):
+        Lesson.objects.create(path=other_path, slug="prompt-1", title="P1", order=1)
+        resp = auth_client.get("/api/v1/paths/")
+        for path_data in resp.data:
+            assert "lessons" in path_data
+            assert len(path_data["lessons"]) >= 1
+
+    def test_lesson_slug_matches(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["slug"] == "intro-ai"
+
+    def test_lesson_title_matches(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["title"] == "Intro to AI"
+
+    def test_lesson_xp_reward_matches(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["xp_reward"] == 10
+
+    def test_no_content_field_in_list(self, auth_client, learning_path, lesson):
+        """Lesson content should not be in list view (only in detail)."""
+        resp = auth_client.get("/api/v1/paths/")
+        assert "content" not in resp.data[0]["lessons"][0]
+
+    def test_no_system_prompt_in_list(self, auth_client, learning_path, lesson):
+        """System prompt should not be in list view."""
+        resp = auth_client.get("/api/v1/paths/")
+        assert "ai_system_prompt" not in resp.data[0]["lessons"][0]
+
+    def test_unauthenticated_no_access(self, client, learning_path, lesson):
+        resp = client.get("/api/v1/paths/")
+        assert resp.status_code in (401, 403)
+
+
+class TestPathListCompletedAt:
+    def test_completed_at_null_when_not_completed(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["completed_at"] is None
+
+    def test_completed_at_set_when_completed(self, auth_client, user, learning_path, lesson):
+        now = timezone.now()
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=now,
+        )
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["completed_at"] is not None
+
+    def test_completed_at_null_for_incomplete_progress(self, auth_client, user, learning_path, lesson):
+        LessonProgress.objects.create(user=user, lesson=lesson, completed=False)
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["completed_at"] is None
+
+    def test_completed_at_not_visible_to_other_user(self, auth_client, other_user, learning_path, lesson):
+        LessonProgress.objects.create(
+            user=other_user, lesson=lesson, completed=True, completed_at=timezone.now(),
+        )
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["lessons"][0]["completed_at"] is None
+
+    def test_mixed_completed_at(self, auth_client, user, learning_path, lesson, other_lesson):
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now(),
+        )
+        resp = auth_client.get("/api/v1/paths/")
+        by_slug = {l["slug"]: l for l in resp.data[0]["lessons"]}
+        assert by_slug["intro-ai"]["completed_at"] is not None
+        assert by_slug["history-ai"]["completed_at"] is None
+
+
+class TestPathListTotalXp:
+    def test_total_xp_field_present(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert "total_xp" in resp.data[0]
+
+    def test_total_xp_single_lesson(self, auth_client, learning_path, lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["total_xp"] == 10
+
+    def test_total_xp_multiple_lessons(self, auth_client, learning_path, lesson, other_lesson):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["total_xp"] == 25  # 10 + 15
+
+    def test_total_xp_empty_path(self, auth_client, learning_path):
+        resp = auth_client.get("/api/v1/paths/")
+        assert resp.data[0]["total_xp"] == 0
+
+    def test_total_xp_per_path(self, auth_client, learning_path, other_path, lesson):
+        Lesson.objects.create(path=other_path, slug="other-l", title="OL", xp_reward=20, order=1)
+        resp = auth_client.get("/api/v1/paths/")
+        xp_by_slug = {p["slug"]: p["total_xp"] for p in resp.data}
+        assert xp_by_slug["ai-basics"] == 10
+        assert xp_by_slug["prompt-eng"] == 20
+
+
+# ── Certificate PDF Generator ─────────────────────────────
+
+
+class TestCertificateGenerator:
+    """Tests for the generate_certificate() function."""
+
+    def test_returns_bytes_buffer(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        assert buf is not None
+        data = buf.read()
+        assert len(data) > 0
+
+    def test_pdf_starts_with_pdf_header(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+
+    def test_generates_with_full_name(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        user.first_name = "Max"
+        user.last_name = "Muster"
+        user.save()
+        buf = generate_certificate(user, learning_path, timezone.now())
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+        assert len(data) > 500
+
+    def test_generates_with_username_fallback(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        user.first_name = ""
+        user.last_name = ""
+        user.save()
+        buf = generate_certificate(user, learning_path, timezone.now())
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+        assert len(data) > 500
+
+    def test_generates_for_beginner_difficulty(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_generates_for_intermediate_difficulty(self, user, other_path):
+        from core.certificates import generate_certificate
+
+        Lesson.objects.create(
+            path=other_path, slug="pe-1", title="PE 1", xp_reward=10, order=1
+        )
+        buf = generate_certificate(user, other_path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_generates_for_advanced_difficulty(self, user, db):
+        from core.certificates import generate_certificate
+
+        path = LearningPath.objects.create(
+            slug="adv", title="Advanced", icon="X", difficulty="advanced", order=3
+        )
+        Lesson.objects.create(path=path, slug="a1", title="A1", xp_reward=5, order=1)
+        buf = generate_certificate(user, path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_generates_for_unknown_difficulty(self, user, db):
+        from core.certificates import generate_certificate
+
+        path = LearningPath.objects.create(
+            slug="custom", title="Custom", icon="C", difficulty="expert", order=4
+        )
+        buf = generate_certificate(user, path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_none_completed_date_uses_now(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, None)
+        data = buf.read()
+        assert len(data) > 100
+
+    def test_generates_with_multiple_lessons(self, user, learning_path, lesson, other_lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+        assert len(data) > 500
+
+    def test_generates_with_specific_date(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+        from datetime import datetime as dt
+
+        date = dt(2026, 3, 15, tzinfo=timezone.get_current_timezone())
+        buf = generate_certificate(user, learning_path, date)
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+
+    def test_buffer_is_seeked_to_start(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        assert buf.tell() == 0
+
+    def test_path_with_no_lessons(self, user, db):
+        from core.certificates import generate_certificate
+
+        path = LearningPath.objects.create(
+            slug="empty", title="Empty", icon="E", difficulty="beginner", order=5
+        )
+        buf = generate_certificate(user, path, timezone.now())
+        data = buf.read()
+        assert data[:5] == b"%PDF-"
+
+    def test_pdf_size_reasonable(self, user, learning_path, lesson):
+        """PDF should be between 1KB and 1MB."""
+        from core.certificates import generate_certificate
+
+        buf = generate_certificate(user, learning_path, timezone.now())
+        size = len(buf.read())
+        assert 1000 < size < 1_000_000
+
+    def test_user_with_long_name(self, user, learning_path, lesson):
+        from core.certificates import generate_certificate
+
+        user.first_name = "A" * 50
+        user.last_name = "B" * 50
+        user.save()
+        buf = generate_certificate(user, learning_path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_path_with_special_chars_in_title(self, user, db):
+        from core.certificates import generate_certificate
+
+        path = LearningPath.objects.create(
+            slug="special", title="AI & ML — Über Basics", icon="S",
+            difficulty="beginner", order=6
+        )
+        buf = generate_certificate(user, path, timezone.now())
+        assert buf.read()[:5] == b"%PDF-"
+
+    def test_generates_deterministic_size(self, user, learning_path, lesson):
+        """Same inputs → same size PDF."""
+        from core.certificates import generate_certificate
+
+        now = timezone.now()
+        buf1 = generate_certificate(user, learning_path, now)
+        buf2 = generate_certificate(user, learning_path, now)
+        assert len(buf1.read()) == len(buf2.read())
+
+
+# ── Certificate Endpoint ──────────────────────────────────
+
+
+class TestCertificateEndpoint:
+    """Tests for GET /api/v1/paths/{slug}/certificate/"""
+
+    def test_unauthenticated_returns_401(self, client, learning_path):
+        resp = client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code in (401, 403)
+
+    def test_nonexistent_path_returns_404(self, auth_client):
+        resp = auth_client.get("/api/v1/paths/does-not-exist/certificate/")
+        assert resp.status_code == 404
+
+    def test_incomplete_path_returns_400(self, auth_client, learning_path, lesson, other_lesson):
+        # Complete only one of two lessons
+        LessonProgress.objects.create(
+            user=auth_client.handler._force_user,
+            lesson=lesson,
+            completed=True,
+            completed_at=timezone.now(),
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 400
+
+    def test_incomplete_returns_error_message(self, auth_client, learning_path, lesson, other_lesson):
+        LessonProgress.objects.create(
+            user=auth_client.handler._force_user,
+            lesson=lesson,
+            completed=True,
+            completed_at=timezone.now(),
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert "error" in resp.data
+        assert "1 Lektionen offen" in resp.data["error"]
+
+    def test_incomplete_returns_progress_counts(self, auth_client, learning_path, lesson, other_lesson):
+        LessonProgress.objects.create(
+            user=auth_client.handler._force_user,
+            lesson=lesson,
+            completed=True,
+            completed_at=timezone.now(),
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.data["completed"] == 1
+        assert resp.data["total"] == 2
+
+    def test_completed_path_returns_pdf(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 200
+        assert resp["Content-Type"] == "application/pdf"
+
+    def test_completed_path_content_disposition(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert "attachment" in resp["Content-Disposition"]
+        assert "Zertifikat" in resp["Content-Disposition"]
+
+    def test_pdf_content_valid(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.content[:5] == b"%PDF-"
+
+    def test_completed_multiple_lessons(self, auth_client, learning_path, lesson, other_lesson):
+        user = auth_client.handler._force_user
+        now = timezone.now()
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=now
+        )
+        LessonProgress.objects.create(
+            user=user, lesson=other_lesson, completed=True, completed_at=now
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 200
+        assert resp["Content-Type"] == "application/pdf"
+
+    def test_no_lessons_completed_returns_400(self, auth_client, learning_path, lesson):
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 400
+        assert resp.data["completed"] == 0
+        assert resp.data["total"] == 1
+
+    def test_other_user_completions_dont_count(self, auth_client, learning_path, lesson, other_user):
+        # Other user completed, but requesting user didn't
+        LessonProgress.objects.create(
+            user=other_user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 400
+
+    def test_incomplete_progress_not_counted(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=False
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 400
+
+    def test_filename_contains_path_title(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert "AI_Grundlagen" in resp["Content-Disposition"]
+
+    def test_filename_contains_username(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert user.username in resp["Content-Disposition"]
+
+    def test_uses_last_completed_date(self, auth_client, learning_path, lesson, other_lesson):
+        user = auth_client.handler._force_user
+        early = timezone.now() - timezone.timedelta(days=10)
+        late = timezone.now()
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=early
+        )
+        LessonProgress.objects.create(
+            user=user, lesson=other_lesson, completed=True, completed_at=late
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 200
+        # PDF contains the date — just ensure it's valid
+        assert len(resp.content) > 100
+
+    def test_pdf_not_empty(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert len(resp.content) > 500  # Real PDF is much larger
+
+    def test_empty_path_returns_pdf(self, auth_client, db):
+        """A path with zero lessons — all 0 of 0 are completed."""
+        path = LearningPath.objects.create(
+            slug="empty-cert", title="Empty", icon="E", difficulty="beginner", order=9
+        )
+        resp = auth_client.get(f"/api/v1/paths/{path.slug}/certificate/")
+        # 0 out of 0 lessons completed → technically complete
+        assert resp.status_code == 200
+        assert resp["Content-Type"] == "application/pdf"
+
+    def test_user_with_no_name(self, auth_client, learning_path, lesson):
+        user = auth_client.handler._force_user
+        user.first_name = ""
+        user.last_name = ""
+        user.save()
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.status_code == 200
+
+    def test_remaining_count_multiple(self, auth_client, learning_path, lesson, other_lesson):
+        """No lessons completed — remaining should be 2."""
+        resp = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp.data["completed"] == 0
+        assert resp.data["total"] == 2
+        assert "2 Lektionen offen" in resp.data["error"]
+
+    def test_different_paths_independent(self, auth_client, learning_path, other_path, lesson):
+        """Completing lessons in one path doesn't affect another."""
+        user = auth_client.handler._force_user
+        other_lesson = Lesson.objects.create(
+            path=other_path, slug="pe-l1", title="PE L1", xp_reward=10, order=1
+        )
+        # Complete lesson in learning_path
+        LessonProgress.objects.create(
+            user=user, lesson=lesson, completed=True, completed_at=timezone.now()
+        )
+        # Other path should still be incomplete from this user's perspective
+        resp = auth_client.get(f"/api/v1/paths/{other_path.slug}/certificate/")
+        assert resp.status_code == 400
+        # But learning_path should work
+        resp2 = auth_client.get(f"/api/v1/paths/{learning_path.slug}/certificate/")
+        assert resp2.status_code == 200

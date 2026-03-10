@@ -1,3 +1,5 @@
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.generics import ListAPIView, RetrieveAPIView
@@ -5,13 +7,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.certificates import generate_certificate
 from core.models import Achievement, UserAchievement
 from core.serializers import UserAchievementSerializer, UserProfileSerializer
 
 from .models import Lesson, LearningPath, LessonProgress
 from .serializers import (
     LearningPathListSerializer,
-    LearningPathSerializer,
     LessonSerializer,
 )
 
@@ -23,7 +25,7 @@ class LearningPathListView(ListAPIView):
 
 
 class LearningPathDetailView(RetrieveAPIView):
-    serializer_class = LearningPathSerializer
+    serializer_class = LearningPathListSerializer
     permission_classes = [IsAuthenticated]
     queryset = LearningPath.objects.prefetch_related("lessons")
     lookup_field = "slug"
@@ -68,12 +70,30 @@ class LessonCompleteView(APIView):
 
         # Award XP and recalculate level
         profile = request.user.profile
+        old_level = profile.level
         profile.xp += lesson.xp_reward
         profile.level = profile.xp // 100 + 1
         profile.save()
 
+        # Level-up email
+        if profile.level > old_level:
+            from core.emails import send_level_up_email
+
+            send_level_up_email(request.user, profile.level, profile.xp)
+
         # Check achievements
         new_achievements = self._check_achievements(request.user)
+
+        # Check if entire path is now completed
+        path = lesson.path
+        total_lessons = path.lessons.count()
+        completed_lessons = LessonProgress.objects.filter(
+            user=request.user, lesson__path=path, completed=True
+        ).count()
+        if completed_lessons == total_lessons:
+            from core.emails import send_path_completed_email
+
+            send_path_completed_email(request.user, path)
 
         return Response(
             {
@@ -114,5 +134,46 @@ class LessonCompleteView(APIView):
                     user=user, achievement=achievement
                 )
                 unlocked.append(ua)
+                from core.emails import send_achievement_email
+
+                send_achievement_email(user, achievement)
 
         return unlocked
+
+
+class CertificateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, slug):
+        path = get_object_or_404(LearningPath, slug=slug)
+        lessons = path.lessons.all()
+        completed = LessonProgress.objects.filter(
+            user=request.user,
+            lesson__in=lessons,
+            completed=True,
+        )
+
+        if completed.count() < lessons.count():
+            remaining = lessons.count() - completed.count()
+            return Response(
+                {
+                    "error": f"Lernpfad noch nicht abgeschlossen. "
+                    f"Noch {remaining} Lektionen offen.",
+                    "completed": completed.count(),
+                    "total": lessons.count(),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Letztes Completion-Datum
+        last_completed = completed.order_by("-completed_at").first()
+        completed_date = last_completed.completed_at if last_completed else None
+
+        pdf_buffer = generate_certificate(request.user, path, completed_date)
+
+        filename = (
+            f"Zertifikat_{path.title.replace(' ', '_')}_{request.user.username}.pdf"
+        )
+        response = HttpResponse(pdf_buffer.read(), content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response

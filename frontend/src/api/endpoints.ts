@@ -65,3 +65,8 @@ export async function fetchDemoUsers() {
   const resp = await apiClient.get('auth/demo-users/');
   return resp.data;
 }
+
+export async function fetchAnalytics() {
+  const resp = await apiClient.get('analytics/');
+  return resp.data;
+}

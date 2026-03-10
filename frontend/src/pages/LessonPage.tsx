@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link as RouterLink } from 'react-router-dom';
+import { useParams, useNavigate, Link as RouterLink } from 'react-router-dom';
 import {
   Box,
   Breadcrumbs,
@@ -16,6 +16,7 @@ import {
 import {
   CheckCircle as CheckIcon,
   EmojiEvents as TrophyIcon,
+  NavigateNext as NextIcon,
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -32,11 +33,22 @@ interface LessonData {
   ai_system_prompt: string;
 }
 
+interface PathLessonData {
+  slug: string;
+  title: string;
+  order: number;
+  completed: boolean;
+}
+
 interface PathData {
+  slug: string;
   title: string;
   icon: string;
   difficulty: string;
-  lessons: { slug: string; title: string }[];
+  progress_percent: number;
+  lessons_count: number;
+  completed_count: number;
+  lessons: PathLessonData[];
 }
 
 const DIFFICULTY_COLORS: Record<string, string> = {
@@ -53,6 +65,7 @@ const DIFFICULTY_LABELS: Record<string, string> = {
 
 export default function LessonPage() {
   const { pathSlug, lessonSlug } = useParams();
+  const navigate = useNavigate();
   const [lesson, setLesson] = useState<LessonData | null>(null);
   const [path, setPath] = useState<PathData | null>(null);
   const [completed, setCompleted] = useState(false);
@@ -128,7 +141,7 @@ export default function LessonPage() {
                 </Link>
                 <Link
                   component={RouterLink}
-                  to="/learn"
+                  to={`/learn/${path.slug}`}
                   color="text.secondary"
                   underline="hover"
                 >
@@ -206,50 +219,113 @@ export default function LessonPage() {
             </Box>
 
             {/* Progress + Complete */}
-            {path && (
-              <Box sx={{ mt: 3, mb: 2 }}>
-                <LinearProgress
-                  variant="determinate"
-                  value={0}
-                  sx={{
-                    height: 6,
-                    borderRadius: 3,
-                    bgcolor: 'rgba(255,255,255,0.08)',
-                    mb: 2,
-                    '& .MuiLinearProgress-bar': { bgcolor: diffColor, borderRadius: 3 },
-                  }}
-                />
-              </Box>
-            )}
+            {path && (() => {
+              const sortedLessons = [...path.lessons].sort((a, b) => a.order - b.order);
+              const currentIdx = sortedLessons.findIndex((l) => l.slug === lessonSlug);
+              const progressValue = completed
+                ? Math.round(((path.completed_count + (sortedLessons[currentIdx]?.completed ? 0 : 1)) / path.lessons_count) * 100)
+                : path.progress_percent;
+              const nextLesson = currentIdx >= 0 && currentIdx < sortedLessons.length - 1
+                ? sortedLessons[currentIdx + 1]
+                : null;
 
-            <Button
-              variant="contained"
-              size="large"
-              onClick={handleComplete}
-              disabled={completed || completing}
-              startIcon={completed ? <CheckIcon /> : <TrophyIcon />}
-              sx={{
-                mb: 4,
-                fontWeight: 700,
-                px: 4,
-                ...(completed && {
-                  bgcolor: 'rgba(0, 167, 111, 0.16)',
-                  color: 'primary.main',
-                  '&.Mui-disabled': {
+              return (
+                <Box sx={{ mt: 3, mb: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                      Fortschritt: {path.icon} {path.title}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                      {Math.min(progressValue, 100)}%
+                    </Typography>
+                  </Box>
+                  <LinearProgress
+                    variant="determinate"
+                    value={Math.min(progressValue, 100)}
+                    sx={{
+                      height: 6,
+                      borderRadius: 3,
+                      bgcolor: 'rgba(255,255,255,0.08)',
+                      mb: 2,
+                      '& .MuiLinearProgress-bar': { bgcolor: diffColor, borderRadius: 3 },
+                    }}
+                  />
+
+                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                    <Button
+                      variant="contained"
+                      size="large"
+                      onClick={handleComplete}
+                      disabled={completed || completing}
+                      startIcon={completed ? <CheckIcon /> : <TrophyIcon />}
+                      sx={{
+                        fontWeight: 700,
+                        px: 4,
+                        ...(completed && {
+                          bgcolor: 'rgba(0, 167, 111, 0.16)',
+                          color: 'primary.main',
+                          '&.Mui-disabled': {
+                            bgcolor: 'rgba(0, 167, 111, 0.16)',
+                            color: 'primary.main',
+                          },
+                        }),
+                      }}
+                    >
+                      {completing ? (
+                        <CircularProgress size={20} color="inherit" />
+                      ) : completed ? (
+                        'Abgeschlossen'
+                      ) : (
+                        `Lektion abschliessen (+${lesson.xp_reward} XP)`
+                      )}
+                    </Button>
+
+                    {completed && nextLesson && (
+                      <Button
+                        variant="outlined"
+                        size="large"
+                        endIcon={<NextIcon />}
+                        onClick={() => navigate(`/learn/${path.slug}/${nextLesson.slug}`)}
+                        sx={{ fontWeight: 700, px: 4 }}
+                      >
+                        Nächste Lektion
+                      </Button>
+                    )}
+                  </Box>
+                </Box>
+              );
+            })()}
+
+            {!path && (
+              <Button
+                variant="contained"
+                size="large"
+                onClick={handleComplete}
+                disabled={completed || completing}
+                startIcon={completed ? <CheckIcon /> : <TrophyIcon />}
+                sx={{
+                  mb: 4,
+                  fontWeight: 700,
+                  px: 4,
+                  ...(completed && {
                     bgcolor: 'rgba(0, 167, 111, 0.16)',
                     color: 'primary.main',
-                  },
-                }),
-              }}
-            >
-              {completing ? (
-                <CircularProgress size={20} color="inherit" />
-              ) : completed ? (
-                'Abgeschlossen'
-              ) : (
-                `Lektion abschliessen (+${lesson.xp_reward} XP)`
-              )}
-            </Button>
+                    '&.Mui-disabled': {
+                      bgcolor: 'rgba(0, 167, 111, 0.16)',
+                      color: 'primary.main',
+                    },
+                  }),
+                }}
+              >
+                {completing ? (
+                  <CircularProgress size={20} color="inherit" />
+                ) : completed ? (
+                  'Abgeschlossen'
+                ) : (
+                  `Lektion abschliessen (+${lesson.xp_reward} XP)`
+                )}
+              </Button>
+            )}
           </Box>
         </Grid>
 

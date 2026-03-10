@@ -21,6 +21,7 @@ import {
   Person as PersonIcon,
   EmojiEvents as EmojiEventsIcon,
   SmartToy as SmartToyIcon,
+  BarChart as BarChartIcon,
 } from '@mui/icons-material';
 
 const SIDEBAR_WIDTH = 280;
@@ -30,6 +31,7 @@ const NAV_ITEMS = [
   { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
   { label: 'Lernpfade', path: '/learn', icon: <SchoolIcon /> },
   { label: 'Leaderboard', path: '/leaderboard', icon: <LeaderboardIcon /> },
+  { label: 'Analytics', path: '/analytics', icon: <BarChartIcon /> },
   { label: 'Achievements', path: '/achievements', icon: <EmojiEventsIcon /> },
   { label: 'AI Chat', path: '/chat', icon: <SmartToyIcon /> },
   { label: 'Profil', path: '/profile', icon: <PersonIcon /> },

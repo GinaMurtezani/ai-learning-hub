@@ -13,6 +13,7 @@ class UserProfile(models.Model):
     streak_days = models.IntegerField(default=0)
     last_activity = models.DateTimeField(auto_now=True)
     avatar_color = models.CharField(max_length=7, default="#00A76F")
+    email_notifications = models.BooleanField(default=True)
 
     def __str__(self):
         return self.user.username

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Box, Chip, CircularProgress, Stack, Typography } from '@mui/material';
 import ChatPanel from '../components/ChatPanel';
-import { fetchAgents, ChatAgentData } from '../api/endpoints';
+import { fetchAgents, type ChatAgentData } from '../api/endpoints';
 
 export default function ChatPage() {
   const [agents, setAgents] = useState<ChatAgentData[]>([]);
